@@ -1,0 +1,179 @@
+\documentclass[10pt,twocolumn]{article}
+
+% ------------------------------------------------------------
+% Packages
+% ------------------------------------------------------------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{float}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue,
+}
+
+\title{Learning Structured Audio Representations with a Masked Joint-Embedding Predictive Architecture}
+\author{
+  Daniel Enriquez \\
+  New York University \\
+  \texttt{dee4002@nyu.edu}
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+% ------------------------------------------------------------
+\begin{abstract}
+We study the representation geometry and temporal consistency of a masked joint-embedding predictive architecture (JEPA) trained on piano audio. Rather than optimizing for downstream discrimination, the model is trained using a predictive self-supervised objective and evaluated through representation diagnostics, including temporal coherence, isotropy, and intra- versus inter-piece separation. Downstream classification is used only as an auxiliary probe. We analyze representation dynamics across training checkpoints and emphasize the role of architectural and evaluation choices driven by computational constraints.
+\end{abstract}
+
+% ------------------------------------------------------------
+\section{Introduction}
+
+Self-supervised representation learning has become a central approach for modeling high-dimensional data without explicit labels. In audio and vision, recent methods increasingly favor predictive objectives over contrastive discrimination, aiming to learn representations by modeling structure and continuity rather than class separation. Joint-embedding predictive architectures (JEPAs) exemplify this direction by training models to predict latent representations of masked or future content instead of reconstructing inputs or contrasting positive and negative pairs.
+
+Recent work such as LeJEPA has further emphasized the importance of representation geometry, introducing variance regularization terms that encourage isotropy and prevent representation collapse. These developments suggest that the behavior of JEPA-style models is governed not only by predictive accuracy, but also by subtle interactions between temporal structure, latent geometry, and distributional constraints.
+
+Despite strong downstream performance reported for JEPAs, comparatively little attention has been paid to how their internal representations evolve over training. In particular, it remains unclear how predictive learning and variance regularization jointly shape temporal consistency, effective dimensionality, and inter-sample similarity in the learned embedding space. This question is especially salient in audio, where temporal continuity is a dominant organizing principle of the data.
+
+In this work, we present an empirical study of the representation dynamics of a masked joint-embedding predictive architecture trained on piano audio. Our model follows the JEPA framework and incorporates SIGReg regularization inspired by LeJEPA. Rather than treating downstream classification accuracy as the primary indicator of success, we analyze representations extracted at multiple training checkpoints using a suite of diagnostics that probe temporal consistency, norm dynamics, isotropy, effective dimensionality, and intra- versus inter-piece similarity.
+
+Our results reveal several consistent patterns. Temporal smoothness emerges early in training, with representations exhibiting high similarity across nearby temporal windows. As training progresses, this smoothness becomes increasingly localized, yielding sharper temporal sensitivity at small offsets and reduced invariance at larger lags. At the same time, latent representations become more isotropic and expand into higher-dimensional subspaces, while discriminative separation between musical pieces decreases. Downstream classification performance peaks at intermediate training stages and does not monotonically track improvements in isotropy or dimensionality.
+
+Together, these findings suggest that JEPA-style training organizes representation space around predictability and temporal coherence rather than discrimination, and that variance regularization introduces meaningful tradeoffs between uniformity and separability. By making these dynamics explicit, our work complements prior JEPA studies and provides a more detailed picture of how predictive self-supervised objectives shape learned representations in audio.
+
+% ------------------------------------------------------------
+\section{Related Work}
+% JEPA, LeJEPA, Audio-JEPA, self-supervised audio representations.
+
+% ------------------------------------------------------------
+\section{Method}
+
+\subsection{Dataset and Preprocessing}
+\label{sec:data}
+
+We train and evaluate our model on a subset of the MAESTRO v3.0.0 dataset, consisting of solo piano performances. Audio recordings are converted to log-mel spectrograms and segmented into fixed-length windows of $W$ frames. All windows are extracted using identical preprocessing parameters during training and evaluation to ensure representational consistency.
+
+Each spectrogram window is treated as a two-dimensional time--frequency array and partitioned into a fixed grid of non-overlapping patches. These patches form the atomic units processed by the encoder. Windows shorter than $W$ frames are zero-padded. No global normalization across windows or pieces is applied beyond standard log-mel computation.
+
+During training, masking is applied at the patch level. A random subset of patches is masked, yielding a partially observed input for the context encoder. The corresponding unmasked window is provided to the target encoder. Masking patterns are sampled dynamically and shared across the batch for stability.
+
+All downstream evaluation and representation diagnostics reuse the same windowing and patchification scheme, without masking.
+
+\subsection{MAJEPA Architecture}
+\label{sec:architecture}
+
+Our model follows a masked joint-embedding predictive architecture (JEPA) adapted to time--frequency audio representations, with additional variance regularization inspired by LeJEPA. A schematic overview is shown in Figure~\ref{fig:majepa_arch}.
+
+The input to the model is a log-mel spectrogram window, partitioned into a fixed grid of non-overlapping time--frequency patches. Each patch is linearly projected into a $D$-dimensional embedding, yielding a sequence of patch tokens arranged on a two-dimensional grid. No special classification token is used; all representations are derived from patch tokens alone.
+
+The architecture consists of two encoders with identical Vision Transformer (ViT) structure: a \emph{context encoder} (student) and a \emph{target encoder} (teacher). The context encoder processes a partially masked input, while the target encoder processes the corresponding unmasked input. The target encoder parameters are updated as an exponential moving average (EMA) of the context encoder parameters and are not directly optimized by gradient descent.
+
+Both encoders produce grid-structured latent patch representations. For the context encoder, only representations at unmasked patch locations are retained. These context representations are augmented with positional encodings and passed to a lightweight predictor network, which outputs predicted embeddings aligned with the target encoder’s representations at masked locations.
+
+In addition to the predictive objective, the model applies a distributional regularization term to the latent representations produced by the target encoder. This regularization encourages the aggregated latent distribution to match an isotropic Gaussian and is implemented using a characteristic-function-based statistic, as described in Section~\ref{sec:objective}.
+
+\subsection{Training Objective}
+\label{sec:objective}
+
+Training optimizes a combination of a masked joint-embedding predictive loss and a variance regularization term applied in representation space.
+
+Let $x$ denote a log-mel spectrogram window partitioned into a grid of patches. A random subset of patch indices $\mathcal{M}$ is selected for masking, yielding a partially observed input $\tilde{x}$. The context encoder $f_{\theta}$ processes $\tilde{x}$, while the target encoder $f_{\bar{\theta}}$, parameterized as an exponential moving average of $\theta$, processes the unmasked input $x$. Gradients are not propagated through the target encoder.
+
+For each masked patch index $i \in \mathcal{M}$, a lightweight predictor network produces a predicted embedding $\hat{z}_i$, which is trained to match the corresponding target encoder embedding $z_i$. The predictive loss is defined as:
+\[
+\mathcal{L}_{\text{pred}} = \frac{1}{|\mathcal{M}|} \sum_{i \in \mathcal{M}} \lVert \hat{z}_i - z_i \rVert^2.
+\]
+
+To regularize the geometry of the latent space, we additionally apply a SIGReg loss to the target encoder representations. Following LeJEPA, SIGReg measures the deviation of the empirical characteristic function of randomly projected latent embeddings from that of a standard normal distribution. The loss is computed on a subsampled set of latent vectors, after centering and per-dimension standardization, and is averaged over multiple random projections.
+
+The final training objective is:
+\[
+\mathcal{L} = \mathcal{L}_{\text{pred}} + \lambda \, \mathcal{L}_{\text{SIGReg}},
+\]
+where $\lambda$ controls the strength of the regularization. SIGReg is applied throughout training and uses step-dependent random projections seeded by the global training step.
+
+\subsection{Representation Extraction}
+\label{sec:extraction}
+
+All representations used for evaluation are derived from the trained MAJEPA model described in Sections~\ref{sec:architecture} and~\ref{sec:objective}. In all cases, embeddings are extracted from the EMA (target) encoder, which is used as a fixed feature extractor. During extraction, no masking is applied and the model operates in evaluation mode.
+
+For a given input window, the target encoder produces a grid of patch-level latent representations corresponding to the input time--frequency patches. These patch representations constitute the fundamental output of the model. To obtain a fixed-dimensional embedding per window, we apply mean pooling over all patch tokens. No special classification token or learned pooling mechanism is used.
+
+Because the model is trained on windowed audio, representation extraction additionally requires defining how window-level embeddings are sampled and aggregated across each musical piece. We use three complementary extraction protocols, each corresponding to a different evaluation objective.
+
+\subsubsection{Piece-Level Embeddings}
+For downstream evaluation tasks, including linear probing and $k$-nearest neighbors classification, we construct a single embedding per piece.
+
+For each musical piece, we sample 20 windows using random temporal offsets. Each window is independently encoded by the target encoder and pooled to produce a window-level embedding. The final piece representation is defined as the mean of these window embeddings:
+\[
+z_p = \frac{1}{20} \sum_{i=1}^{20} z_{p,i}.
+\]
+This aggregation enforces invariance to window position by construction and substantially reduces computational and storage requirements. Only these piece-level embeddings are used for downstream classification experiments.
+
+\subsubsection{Window-Level Geometry Embeddings}
+To analyze the geometry of the learned representation space independently of piece-level aggregation, we extract window-level embeddings without averaging across windows.
+
+For each piece, we extract 50 windows by repeatedly sampling a single random window per pass over the dataset, using different random seeds. Each window is encoded independently, yielding a set of pooled window embeddings. Metadata identifying the source piece and window start location is retained. These embeddings are used exclusively for representation diagnostics, including isotropy, effective dimensionality, and intra- versus inter-piece similarity, and are never used for classification.
+
+This procedure approximates broad temporal coverage while avoiding the cost of exhaustively extracting all possible windows.
+
+\subsubsection{Temporal Embeddings}
+To study temporal consistency, we extract embeddings at controlled temporal offsets within each piece.
+
+For each piece, we randomly select three center windows. Around each center, we extract embeddings at temporal lags $\ell \in \{-10, \dots, 10\}$ with a fixed stride of 10 frames. Window start positions are deterministically forced to ensure precise temporal alignment. Each window is encoded independently and pooled to a fixed-dimensional vector.
+
+This yields temporally ordered embedding sequences suitable for measuring how representation similarity varies as a function of temporal separation. The same extraction protocol is applied at multiple training checkpoints (10k, 25k, 50k, 75k, and 100k steps) using identical parameters and random seeds to ensure comparability across training time.
+
+\paragraph{Compute considerations.}
+The number of windows per piece, pooling strategy, and sampling density are chosen to balance statistical coverage with computational and storage constraints. Alternative extraction strategies, such as denser temporal sampling, token-level trajectory analysis, or learned pooling mechanisms, are possible but are not explored in this work.
+
+% ------------------------------------------------------------
+\section{Results}
+
+\subsection{Temporal Consistency}
+% Section 4.1
+
+\subsection{Downstream Classification Performance}
+% Section 4.2
+
+\subsection{Embedding Norm Dynamics}
+% Section 4.3
+
+\subsection{Isotropy and Effective Dimensionality}
+% Section 4.4
+
+\subsection{Intra- vs Inter-Piece Geometry}
+% Section 4.5
+
+\subsection{Geometry--Isotropy Relationship}
+% Section 4.6
+
+% ------------------------------------------------------------
+\section{Discussion}
+% To be written later.
+
+% ------------------------------------------------------------
+\section{Conclusion}
+% To be written later.
+
+% ------------------------------------------------------------
+\section*{Acknowledgments}
+
+% ------------------------------------------------------------
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
